@@ -3,6 +3,8 @@ import argparse
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
+import pubchempy
+import mwclient 
 
 # -------------------
 # LLM
@@ -133,6 +135,54 @@ def get_melting_point_from_smiles(smiles: str):
 
     return text
 
+# -------------------
+# Wikipedia
+# -------------------
+def name_from_smiles(smiles: str) -> str:
+    """
+    Given a SMILES string, return the preferred name of the compound
+    using PubChem (via PubChemPy).
+    """
+    # Query PubChem using SMILES → Compound
+    compounds = pubchempy.get_compounds(smiles, namespace='smiles')
+
+    if not compounds:
+        raise KeyError(f"No PubChem compound found for SMILES: {smiles}")
+
+    compound = compounds[0]
+
+    # PubChemPy automatically resolves several name fields
+    if compound.iupac_name:
+        return compound.iupac_name
+    if compound.synonyms:
+        return compound.synonyms[0]
+    if compound.title:
+        return compound.title
+
+    raise KeyError(f"Compound found but no name available for SMILES: {smiles}")
+
+def wikiscrape(smiles: str) -> str:
+    name = name_from_smiles(smiles)
+    
+    site   = mwclient.Site('en.wikipedia.org')
+    page   = site.pages[name]
+    target = 'MeltingPtC' 
+    
+    if not page.exists:
+        print("Page not found")
+    else:
+        print(page.name)
+        wikitext = page.text()
+        
+    result = None
+
+    for line in wikitext.splitlines():
+        if target in line:
+            result = line.strip()
+            break
+
+    return result
+
 
 if __name__ == "__main__":
     
@@ -158,4 +208,17 @@ if __name__ == "__main__":
         
         print(response.choices[0].message.content)
     else:
-        print("Melting point is not available!")
+        print("Melting point is not available! Will now search on Wikipedia!")
+                
+        result = wikiscrape(smiles)
+        
+        response = ollama.chat.completions.create(
+            model=OLLAMA,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": result}
+            ]
+        )
+        
+        print(response.choices[0].message.content)
+        
