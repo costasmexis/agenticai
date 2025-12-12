@@ -41,9 +41,13 @@ def get_cid_from_smiles(smiles: str):
     url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{smiles}/cids/JSON"
     r = requests.get(url)
     if r.status_code != 200:
-        return None
+        # Query PubChem using SMILES → Compound
+        compounds = pubchempy.get_compounds(smiles, namespace='smiles')
+        cid = compounds[0].cid
+        return cid
     data = r.json()
-    return data.get("IdentifierList", {}).get("CID", [None])[0]
+    cid = data.get("IdentifierList", {}).get("CID", [None])[0]
+    return cid         
 
 
 def section_to_text(section):
