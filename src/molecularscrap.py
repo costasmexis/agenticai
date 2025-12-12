@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import argparse
 import requests
+from rdkit import Chem
 from tqdm import tqdm
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -126,14 +127,24 @@ def get_melting_point_text(cid: int):
 
 def get_melting_point_from_smiles(smiles: str):
     cid = get_cid_from_smiles(smiles)
+    
     if cid is None:
-        return f"Unable to resolve CID for SMILES: {smiles}"
+        print(f"Unable to resolve CID for SMILES: {smiles}")
+        return None
 
     text = get_melting_point_text(cid)
     if not text:
-        return f"No melting point section found for CID {cid}"
+        print(f"No melting point section found for CID {cid}")
+        return None
 
     return text
+
+# -------------------
+# RDKit
+# -------------------
+def canonicalize_smiles(smiles: str) -> str:
+    mol = Chem.MolFromSmiles(smiles)
+    return Chem.MolToSmiles(mol, canonical=True)
 
 # -------------------
 # Wikipedia
@@ -163,22 +174,29 @@ def name_from_smiles(smiles: str) -> str:
 
 def wikiscrape(smiles: str) -> str:
     name = name_from_smiles(smiles)
+    print(f'Molecule: {name}')    
     
     site   = mwclient.Site('en.wikipedia.org')
     page   = site.pages[name]
-    target = 'MeltingPtC' 
+    targets = ['MeltingPtC', 'MeltingPtK']
     
     if not page.exists:
         return np.nan
-    else:
-        print(page.name)
-        wikitext = page.text()
-        
+    
+    # Follow redirect if present
+    if page.redirect:
+        page = page.redirects_to()
+    
+    # print(page.name)
+    wikitext = page.text()
+    
     result = None
-
     for line in wikitext.splitlines():
-        if target in line:
-            result = line.strip()
+        for t in targets:
+            if t in line:
+                result = line.strip()
+                break
+        if result:
             break
 
     return result
@@ -186,7 +204,7 @@ def wikiscrape(smiles: str) -> str:
 # -------------------
 # Main functions (single SMILES and file)
 # -------------------
-def single_smile(smiles: str):
+def single_smile(smiles: str, verbose: bool = True):
     """
     Given a SMILES string, extract melting point info and run the LLM.
 
@@ -195,13 +213,19 @@ def single_smile(smiles: str):
     - Prints intermediate output and returns the LLM response text.
     """
     smiles = smiles.strip()
+    smiles = canonicalize_smiles(smiles) # Canonicalize
+    
     result = get_melting_point_from_smiles(smiles)
-
-    if result:
-        print("=== Melting Point Section ===")
-        print("--------------------------")
-        print(result)
-        print("--------------------------")
+    
+    if result is not None:
+        source = "pubchem"
+        
+        if verbose:
+            print("=== Melting Point Section ===")
+            print("--------------------------")
+            print(result)
+            print("--------------------------")
+            print()
         
         response = ollama.chat.completions.create(
             model=OLLAMA,
@@ -211,15 +235,20 @@ def single_smile(smiles: str):
             ]
         )
         out = response.choices[0].message.content
-        print(f'\nMelting Poing is: {out}')
+        if verbose:
+            print(f'Source: {source}')
+            print(f'Melting Poing is: {out} K')
     else:
-        print("\nMelting point is not available! Will now search on Wikipedia!\n")
+        source = "wiki"
+        if verbose:
+            print("\nMelting point is not available! Will now search on Wikipedia!\n")
 
         result = wikiscrape(smiles)
 
         # If Wikipedia didn't yield usable text, skip LLM call
         if (result is None) or (isinstance(result, float) and np.isnan(result)) or (isinstance(result, str) and not result.strip()):
-            print('No Wikipedia melting point found.')
+            if verbose:
+                print('No Wikipedia melting point found.')
             out = "NaN"
         else:
             try:
@@ -231,60 +260,36 @@ def single_smile(smiles: str):
                     ]
                 )
                 out = response.choices[0].message.content
-                print(f'Melting Poing is: {out}')
+                if verbose:
+                    print(f'Source: {source}')
+                    print(f'Melting Poing is: {out} K')
             except Exception as e:
-                print(f'Not found or LLM error: {e}')
+                if verbose:
+                    print(f'Not found or LLM error: {e}')
                 out = "NaN"
+    cleaned = out if isinstance(out, str) and out.strip() else "NaN"
+    return cleaned, source
         
 def file_smiles(file: str):
     data = pd.read_csv(file)
-    data = data.sample(10)
-    
-    ids, smiles, melt_points = [], [], []
+    data = data.sample(50)
+
+    ids, smiles_list, melt_points, sources = [], [], [], []
     for i in tqdm(range(len(data))):
-        smi = data['SMILES'].iloc[i]
+        smi = str(data['SMILES'].iloc[i]).strip()
         print(f'Input: {smi}')
         
-        result = get_melting_point_from_smiles(smi)
-
-        if result:
-            response = ollama.chat.completions.create(
-                model=OLLAMA,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": result}
-                ]
-            )
-            response = response.choices[0].message.content        
-            print(f'Tm = {response}')
-            
-        else:
-            result = wikiscrape(smi)
-
-            # Skip LLM call if Wikipedia result is missing/empty/NaN
-            if (result is None) or (isinstance(result, float) and np.isnan(result)) or (isinstance(result, str) and not result.strip()):
-                response = "NaN"
-                print('No Wikipedia melting point found.')
-            else:
-                try:
-                    response_obj = ollama.chat.completions.create(
-                        model=OLLAMA,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": result}
-                        ]
-                    )
-                    response = response_obj.choices[0].message.content
-                    print(f'Tm = {response}')
-                except Exception as e:
-                    print(f'Wikipedia fallback LLM error: {e}')
-                    response = "NaN"
-
+        tm, source = single_smile(smi, verbose=False)
+        
+        print(f'Melting Poing is: {tm} K')
+        print(f'Source: {source}')
+        
         ids.append(data['id'].iloc[i])
-        smiles.append(smi)
-        melt_points.append(response)
-    
-    result_df = pd.DataFrame({'id': ids, 'SMILES': smiles, 'Tm': melt_points})
+        smiles_list.append(smi)
+        melt_points.append(tm)
+        sources.append(source)
+
+    result_df = pd.DataFrame({'id': ids, 'SMILES': smiles_list, 'Tm': melt_points, 'source': sources})
     result_df.to_csv('../data/res.csv', index=False)
         
 if __name__ == "__main__":

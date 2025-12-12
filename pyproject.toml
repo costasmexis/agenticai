@@ -41,6 +41,7 @@ dependencies = [
     "wikipedia>=1.4.0",
     "pubchempy",
     "mwclient",
+    "rdkit",
 ]
 
 [dependency-groups]
