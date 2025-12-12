@@ -180,10 +180,18 @@ def wikiscrape(smiles: str) -> str:
     name = name_from_smiles(smiles)
     print(f'Molecule: {name}')    
     
-    site   = mwclient.Site('en.wikipedia.org')
-    page   = site.pages[name]
+    site = mwclient.Site('en.wikipedia.org')
     targets = ['MeltingPtC', 'MeltingPtK']
-    
+
+    # Resolve page title via search to avoid mwclient title validation issues
+    search = site.search(name)
+    try:
+        resolved_title = next(search)['title']
+    except StopIteration:
+        return np.nan
+
+    page = site.pages[resolved_title]
+
     if not page.exists:
         return np.nan
     
@@ -191,7 +199,6 @@ def wikiscrape(smiles: str) -> str:
     if page.redirect:
         page = page.redirects_to()
     
-    # print(page.name)
     wikitext = page.text()
     
     result = None
