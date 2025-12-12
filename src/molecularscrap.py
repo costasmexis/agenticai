@@ -1,6 +1,8 @@
-import os
+import numpy as np
+import pandas as pd
 import argparse
 import requests
+from tqdm import tqdm
 from dotenv import load_dotenv
 from openai import OpenAI
 import pubchempy
@@ -125,13 +127,11 @@ def get_melting_point_text(cid: int):
 def get_melting_point_from_smiles(smiles: str):
     cid = get_cid_from_smiles(smiles)
     if cid is None:
-        print(f"Unable to resolve CID for SMILES: {smiles}")
-        return None
+        return f"Unable to resolve CID for SMILES: {smiles}"
 
     text = get_melting_point_text(cid)
     if not text:
-        print(f"No melting point section found for CID {cid}")
-        return None
+        return f"No melting point section found for CID {cid}"
 
     return text
 
@@ -169,7 +169,7 @@ def wikiscrape(smiles: str) -> str:
     target = 'MeltingPtC' 
     
     if not page.exists:
-        print("Page not found")
+        return np.nan
     else:
         print(page.name)
         wikitext = page.text()
@@ -183,21 +183,26 @@ def wikiscrape(smiles: str) -> str:
 
     return result
 
+# -------------------
+# Main functions (single SMILES and file)
+# -------------------
+def single_smile(smiles: str):
+    """
+    Given a SMILES string, extract melting point info and run the LLM.
 
-if __name__ == "__main__":
-    
-    parser = argparse.ArgumentParser(description="Extract melting point from PubChem and process with LLM.")
-    parser.add_argument("smiles", type=str, help="The SMILES string of the molecule")
-    args = parser.parse_args()
-    
-    smiles = args.smiles.strip()
-    
+    - If `smiles` is a non-empty string, executes the workflow.
+    - Tries PubChem first; if unavailable, falls back to Wikipedia scraping.
+    - Prints intermediate output and returns the LLM response text.
+    """
+    smiles = smiles.strip()
     result = get_melting_point_from_smiles(smiles)
 
     if result:
         print("=== Melting Point Section ===")
+        print("--------------------------")
         print(result)
         print("--------------------------")
+        
         response = ollama.chat.completions.create(
             model=OLLAMA,
             messages=[
@@ -205,20 +210,92 @@ if __name__ == "__main__":
                 {"role": "user", "content": result}
             ]
         )
-        
-        print(response.choices[0].message.content)
+        out = response.choices[0].message.content
+        print(f'\nMelting Poing is: {out}')
     else:
-        print("Melting point is not available! Will now search on Wikipedia!")
-                
+        print("\nMelting point is not available! Will now search on Wikipedia!\n")
+
         result = wikiscrape(smiles)
+
+        # If Wikipedia didn't yield usable text, skip LLM call
+        if (result is None) or (isinstance(result, float) and np.isnan(result)) or (isinstance(result, str) and not result.strip()):
+            print('No Wikipedia melting point found.')
+            out = "NaN"
+        else:
+            try:
+                response = ollama.chat.completions.create(
+                    model=OLLAMA,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": result}
+                    ]
+                )
+                out = response.choices[0].message.content
+                print(f'Melting Poing is: {out}')
+            except Exception as e:
+                print(f'Not found or LLM error: {e}')
+                out = "NaN"
         
-        response = ollama.chat.completions.create(
-            model=OLLAMA,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": result}
-            ]
-        )
+def file_smiles(file: str):
+    data = pd.read_csv(file)
+    data = data.sample(10)
+    
+    ids, smiles, melt_points = [], [], []
+    for i in tqdm(range(len(data))):
+        smi = data['SMILES'].iloc[i]
+        print(f'Input: {smi}')
         
-        print(response.choices[0].message.content)
+        result = get_melting_point_from_smiles(smi)
+
+        if result:
+            response = ollama.chat.completions.create(
+                model=OLLAMA,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": result}
+                ]
+            )
+            response = response.choices[0].message.content        
+            print(f'Tm = {response}')
+            
+        else:
+            result = wikiscrape(smi)
+
+            # Skip LLM call if Wikipedia result is missing/empty/NaN
+            if (result is None) or (isinstance(result, float) and np.isnan(result)) or (isinstance(result, str) and not result.strip()):
+                response = "NaN"
+                print('No Wikipedia melting point found.')
+            else:
+                try:
+                    response_obj = ollama.chat.completions.create(
+                        model=OLLAMA,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": result}
+                        ]
+                    )
+                    response = response_obj.choices[0].message.content
+                    print(f'Tm = {response}')
+                except Exception as e:
+                    print(f'Wikipedia fallback LLM error: {e}')
+                    response = "NaN"
+
+        ids.append(data['id'].iloc[i])
+        smiles.append(smi)
+        melt_points.append(response)
+    
+    result_df = pd.DataFrame({'id': ids, 'SMILES': smiles, 'Tm': melt_points})
+    result_df.to_csv('../data/res.csv', index=False)
         
+if __name__ == "__main__":
+    
+    parser = argparse.ArgumentParser(description="Extract melting point from PubChem and process with LLM.")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--smiles", type=str, help="The SMILES string of the molecule")
+    group.add_argument("--file",   type=str, help="Path to .csv with smiles")
+    args = parser.parse_args()
+
+    if args.smiles:
+        single_smile(args.smiles)
+    else:
+        file_smiles(args.file)
