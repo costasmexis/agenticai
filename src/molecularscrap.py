@@ -39,15 +39,27 @@ If the text does not contain a clear melting point, output “NaN”.
 
 def get_cid_from_smiles(smiles: str):
     url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/{smiles}/cids/JSON"
-    r = requests.get(url)
-    if r.status_code != 200:
-        # Query PubChem using SMILES → Compound
+
+    # Try PUG-REST
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            cid = data.get("IdentifierList", {}).get("CID", [None])[0]
+            if cid is not None:
+                return cid
+    except requests.RequestException:
+        pass
+
+    # Fallback: PubChemPy
+    try:
         compounds = pubchempy.get_compounds(smiles, namespace='smiles')
-        cid = compounds[0].cid
-        return cid
-    data = r.json()
-    cid = data.get("IdentifierList", {}).get("CID", [None])[0]
-    return cid         
+        if compounds:
+            return compounds[0].cid
+    except Exception:
+        pass
+
+    return None         
 
 
 def section_to_text(section):
@@ -147,8 +159,14 @@ def get_melting_point_from_smiles(smiles: str):
 # RDKit
 # -------------------
 def canonicalize_smiles(smiles: str) -> str:
-    mol = Chem.MolFromSmiles(smiles)
-    return Chem.MolToSmiles(mol, canonical=True)
+    """Return a canonical SMILES; if parsing fails, return the original."""
+    try:
+        mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return smiles
+        return Chem.MolToSmiles(mol, canonical=True)
+    except Exception:
+        return smiles
 
 # -------------------
 # Wikipedia
@@ -177,40 +195,46 @@ def name_from_smiles(smiles: str) -> str:
     raise KeyError(f"Compound found but no name available for SMILES: {smiles}")
 
 def wikiscrape(smiles: str) -> str:
-    name = name_from_smiles(smiles)
-    print(f'Molecule: {name}')    
-    
-    site = mwclient.Site('en.wikipedia.org')
-    targets = ['MeltingPtC', 'MeltingPtK']
-
-    # Resolve page title via search to avoid mwclient title validation issues
-    search = site.search(name)
     try:
-        resolved_title = next(search)['title']
-    except StopIteration:
+        name = name_from_smiles(smiles)
+        print(f'Molecule: {name}')
+    except Exception:
         return np.nan
 
-    page = site.pages[resolved_title]
+    try:
+        site = mwclient.Site('en.wikipedia.org')
+        targets = ['MeltingPtC', 'MeltingPtK']
 
-    if not page.exists:
-        return np.nan
-    
-    # Follow redirect if present
-    if page.redirect:
-        page = page.redirects_to()
-    
-    wikitext = page.text()
-    
-    result = None
-    for line in wikitext.splitlines():
-        for t in targets:
-            if t in line:
-                result = line.strip()
+        # Resolve page title via search to avoid mwclient title validation issues
+        search = site.search(name)
+        try:
+            resolved_title = next(search)['title']
+        except StopIteration:
+            return np.nan
+
+        page = site.pages[resolved_title]
+
+        if not page.exists:
+            return np.nan
+
+        # Follow redirect if present
+        if page.redirect:
+            page = page.redirects_to()
+
+        wikitext = page.text()
+
+        result = None
+        for line in wikitext.splitlines():
+            for t in targets:
+                if t in line:
+                    result = line.strip()
+                    break
+            if result:
                 break
-        if result:
-            break
 
-    return result
+        return result
+    except Exception:
+        return np.nan
 
 # -------------------
 # Main functions (single SMILES and file)
@@ -248,7 +272,7 @@ def single_smile(smiles: str, verbose: bool = True):
         out = response.choices[0].message.content
         if verbose:
             print(f'Source: {source}')
-            print(f'Melting Poing is: {out} K')
+            print(f'Melting Point is: {out} K')
     else:
         source = "wiki"
         if verbose:
@@ -273,7 +297,7 @@ def single_smile(smiles: str, verbose: bool = True):
                 out = response.choices[0].message.content
                 if verbose:
                     print(f'Source: {source}')
-                    print(f'Melting Poing is: {out} K')
+                    print(f'Melting Point is: {out} K')
             except Exception as e:
                 if verbose:
                     print(f'Not found or LLM error: {e}')
@@ -283,7 +307,6 @@ def single_smile(smiles: str, verbose: bool = True):
         
 def file_smiles(file: str):
     data = pd.read_csv(file)
-    data = data.sample(50)
 
     ids, smiles_list, melt_points, sources = [], [], [], []
     for i in tqdm(range(len(data))):
