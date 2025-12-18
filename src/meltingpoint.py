@@ -4,16 +4,40 @@ from google import genai
 from openai import OpenAI
 import gradio as gr
 
-load_dotenv(override=True) # override=True means any existing environment variables will be overwritten by values from the .env file.
+# -------------------
+# LLM
+# -------------------
+OLLAMA = "gpt-oss:20b"
+OLLAMA_API = "http://localhost:11434/api/chat"
 
-ollama = OpenAI(api_key=os.getenv("GEMINI_API_KEY"), base_url="https://generativelanguage.googleapis.com/v1beta/openai")
+ollama = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 
-system_prompt = "You are a professional computational chemist specializing in molecular property prediction. \
-Your task is to predict the melting point (in Kelvin) of a molecule given its SMILES string. \
-Input: The user will provide a single SMILES string. \
-Output: You must return only one number, representing the predicted melting point in Kelvin, with no explanation, no units, and no additional text. \
-Feel free to seach internet for the metling point of the compound. \
-If you are unsure, output your best estimate as a number. Do not include comments, symbols, units, or text. "
+
+
+
+
+
+
+
+
+
+
+
+
+system_prompt = """
+You are an expert in cheminformatics. You receive questions such as:
+“What is the melting point of CCO?”
+
+From each question, you must:
+
+Identify the SMILES string.
+
+Identify the requested molecular property.
+
+Resolve the SMILES to the correct compound and retrieve the requested property only from the specified source. Report the value using standard units and clearly state the source.
+
+If the SMILES is invalid, ambiguous, or the property is not available from the requested source, state this clearly. Do not infer or use other sources.
+"""
 
 def chat(message, history):
     messages = [{"role": "system", "content": system_prompt}] + history + [{"role": "user", "content": message}]
