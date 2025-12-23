@@ -42,6 +42,10 @@ dependencies = [
     "pubchempy",
     "mwclient",
     "rdkit",
+    "openai-agents[litellm]",
+    "thermo",
+    "matplotlib",
+    "scikit-learn",
 ]
 
 [dependency-groups]
